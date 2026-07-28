@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports above (feel free to remove this!)
@@ -34,10 +35,12 @@ func main() {
 		fmt.Println("Error reading request: ", err.Error())
 		os.Exit(1)
 	}
-
+	base := "/" + path.Base(req.URL.Path)
 	switch req.URL.Path {
 	case "/":
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+	case "/echo" + base:
+		conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(base)-1, base[1:])))
 	default:
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
