@@ -8,6 +8,8 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports above (feel free to remove this!)
@@ -24,12 +26,29 @@ func main() {
 		os.Exit(1)
 	}
 	defer l.Close()
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
+	wg := sync.WaitGroup{}
+	timeout := time.NewTimer(10 * time.Second)
+	for true {
+		select {
+		case <-timeout.C:
+			os.Exit(1)
+		default:
+			conn, err := l.Accept()
+			if err != nil {
+				fmt.Println("Error accepting connection: ", err.Error())
+				os.Exit(1)
+			}
+			wg.Add(1)
+			go handleRequest(conn, &wg)
+			timeout.Reset(10 * time.Second)
+		}
 	}
+}
+
+func handleRequest(conn net.Conn, wg *sync.WaitGroup) {
 	defer conn.Close()
+	defer wg.Done()
+
 	reader := bufio.NewReader(conn)
 	req, err := http.ReadRequest(reader)
 	if err != nil {
