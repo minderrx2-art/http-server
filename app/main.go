@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -61,11 +62,13 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 
 	reader := bufio.NewReader(conn)
 	req, err := http.ReadRequest(reader)
+
 	if err != nil {
 		fmt.Println("Error reading request: ", err.Error())
 		os.Exit(1)
 	}
 	base := "/" + path.Base(req.URL.Path)
+
 	switch req.URL.Path {
 	case "/":
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
@@ -87,13 +90,22 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 			len(userAgent), userAgent,
 		))
 	case "/files" + base:
-		handleFiles(conn, base, cfg)
+		switch req.Method {
+		case "POST":
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				conn.Write(fmt.Appendf(nil, "HTTP/1.1 200 OK\r\n"))
+			}
+			handlePOSTFile(conn, base, cfg, body)
+		case "GET":
+			handleGetFile(conn, base, cfg)
+		}
 	default:
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
 }
 
-func handleFiles(conn net.Conn, base string, cfg *config) {
+func handleGetFile(conn net.Conn, base string, cfg *config) {
 	fp := path.Join(cfg.directory, base)
 	info, err := os.Stat(fp)
 	if err != nil {
@@ -120,4 +132,13 @@ func handleFiles(conn net.Conn, base string, cfg *config) {
 		// Body
 		conn.Write(bytes)
 	}
+}
+
+func handlePOSTFile(conn net.Conn, base string, cfg *config, body []byte) {
+	fp := path.Join(cfg.directory, base)
+	err := os.WriteFile(fp, body, 0777)
+	if err != nil {
+		panic("Failed to write a file")
+	}
+	conn.Write(fmt.Appendf(nil, "HTTP/1.1 201 Created\r\n\r\n"))
 }
