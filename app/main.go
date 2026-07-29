@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,13 +13,22 @@ import (
 	"time"
 )
 
-// Ensures gofmt doesn't remove the "net" and "os" imports above (feel free to remove this!)
 var _ = net.Listen
 var _ = os.Exit
 
+type config struct {
+	directory string
+}
+
+func parseConfig() config {
+	cfg := config{}
+	flag.StringVar(&cfg.directory, "directory", "./", "Root directory path")
+	flag.Parse()
+	return cfg
+}
+
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
+	cfg := parseConfig()
 
 	l, err := net.Listen("tcp", "0.0.0.0:4221")
 	if err != nil {
@@ -39,13 +49,13 @@ func main() {
 				os.Exit(1)
 			}
 			wg.Add(1)
-			go handleRequest(conn, &wg)
+			go handleRequest(conn, &wg, &cfg)
 			timeout.Reset(10 * time.Second)
 		}
 	}
 }
 
-func handleRequest(conn net.Conn, wg *sync.WaitGroup) {
+func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 	defer conn.Close()
 	defer wg.Done()
 
@@ -64,7 +74,13 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup) {
 	case "/user-agent":
 		userAgent := req.Header.Get(strings.ToLower("User-Agent"))
 		conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(userAgent), userAgent)))
+	case "/files" + base:
+		handleFiles(conn, base, cfg)
 	default:
 		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
 	}
+}
+
+func handleFiles(conn net.Conn, base string, cfg *config) {
+	
 }
