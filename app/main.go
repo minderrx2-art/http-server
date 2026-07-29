@@ -110,12 +110,14 @@ func handleFiles(conn net.Conn, base string, cfg *config) {
 			panic("File exists but cant open it")
 		}
 		_, err = bufio.NewReader(file).Read(bytes)
+		// Header
 		conn.Write(fmt.Appendf(nil,
 			"HTTP/1.1 200 OK\r\n"+
 				"Content-Type: application/octet-stream\r\n"+
-				"Content-Length: %d\r\n\r\n"+
-				string(bytes),
+				"Content-Length: %d\r\n\r\n",
 			info.Size(),
 		))
+		// Body
+		conn.Write(bytes)
 	}
 }
