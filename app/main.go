@@ -70,10 +70,22 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 	case "/":
 		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
 	case "/echo" + base:
-		conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(base)-1, base[1:])))
+		conn.Write(fmt.Appendf(nil,
+			"HTTP/1.1 200 OK\r\n"+
+				"Content-Type: text/plain\r\n"+
+				"Content-Length: %d\r\n\r\n"+
+				"%s",
+			len(base)-1, base[1:],
+		))
 	case "/user-agent":
 		userAgent := req.Header.Get(strings.ToLower("User-Agent"))
-		conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(userAgent), userAgent)))
+		conn.Write(fmt.Appendf(nil,
+			"HTTP/1.1 200 OK\r\n"+
+				"Content-Type: text/plain\r\n"+
+				"Content-Length: %d\r\n\r\n"+
+				"%s",
+			len(userAgent), userAgent,
+		))
 	case "/files" + base:
 		handleFiles(conn, base, cfg)
 	default:
@@ -82,5 +94,28 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 }
 
 func handleFiles(conn net.Conn, base string, cfg *config) {
-	
+	fp := path.Join(cfg.directory, base)
+	info, err := os.Stat(fp)
+	if err != nil {
+		if os.IsNotExist(err) {
+			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		} else {
+			panic("Something broke when checking file status")
+		}
+	}
+	if info.Mode().IsRegular() {
+		bytes := make([]byte, info.Size())
+		file, err := os.Open(fp)
+		if err != nil {
+			panic("File exists but cant open it")
+		}
+		_, err = bufio.NewReader(file).Read(bytes)
+		conn.Write(fmt.Appendf(nil,
+			"HTTP/1.1 200 OK\r\n"+
+				"Content-Type: application/octet-stream\r\n"+
+				"Content-Length: %d\r\n\r\n"+
+				string(bytes),
+			info.Size(),
+		))
+	}
 }
