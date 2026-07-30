@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,13 @@ var _ = os.Exit
 
 type config struct {
 	directory string
+}
+
+type Connection struct {
+	socket net.Conn
+	req    *http.Request
+	base   string
+	body   []byte
 }
 
 func parseConfig() config {
@@ -46,7 +56,7 @@ func main() {
 		default:
 			conn, err := l.Accept()
 			if err != nil {
-				fmt.Println("Error accepting connection: ", err.Error())
+				fmt.Println("Error accepting conn: ", err.Error())
 				os.Exit(1)
 			}
 			wg.Add(1)
@@ -56,11 +66,11 @@ func main() {
 	}
 }
 
-func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
-	defer conn.Close()
+func handleRequest(socket net.Conn, wg *sync.WaitGroup, cfg *config) {
+	defer socket.Close()
 	defer wg.Done()
 
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(socket)
 	req, err := http.ReadRequest(reader)
 
 	if err != nil {
@@ -68,77 +78,96 @@ func handleRequest(conn net.Conn, wg *sync.WaitGroup, cfg *config) {
 		os.Exit(1)
 	}
 	base := "/" + path.Base(req.URL.Path)
+	body, _ := io.ReadAll(req.Body)
+	conn := Connection{socket, req, base, body}
 
 	switch req.URL.Path {
 	case "/":
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		handleResponse(&conn, http.StatusOK, nil, nil)
 	case "/echo" + base:
-		conn.Write(fmt.Appendf(nil,
-			"HTTP/1.1 200 OK\r\n"+
-				"Content-Type: text/plain\r\n"+
-				"Content-Length: %d\r\n\r\n"+
-				"%s",
-			len(base)-1, base[1:],
-		))
+		handleResponse(&conn, http.StatusOK, map[string]string{
+			"Content-Type": "text/plain",
+		}, []byte(base[1:]))
 	case "/user-agent":
 		userAgent := req.Header.Get(strings.ToLower("User-Agent"))
-		conn.Write(fmt.Appendf(nil,
-			"HTTP/1.1 200 OK\r\n"+
-				"Content-Type: text/plain\r\n"+
-				"Content-Length: %d\r\n\r\n"+
-				"%s",
-			len(userAgent), userAgent,
-		))
+		handleResponse(&conn, http.StatusOK, map[string]string{
+			"Content-Type": "text/plain",
+		}, []byte(userAgent))
 	case "/files" + base:
 		switch req.Method {
 		case "POST":
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				conn.Write(fmt.Appendf(nil, "HTTP/1.1 200 OK\r\n"))
-			}
-			handlePOSTFile(conn, base, cfg, body)
+			handlePOSTFile(&conn, cfg)
 		case "GET":
-			handleGetFile(conn, base, cfg)
+			handleGetFile(&conn, cfg)
 		}
 	default:
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		handleResponse(&conn, http.StatusNotFound, nil, nil)
 	}
 }
 
-func handleGetFile(conn net.Conn, base string, cfg *config) {
-	fp := path.Join(cfg.directory, base)
+func handleGetFile(conn *Connection, cfg *config) {
+	fp := path.Join(cfg.directory, conn.base)
 	info, err := os.Stat(fp)
 	if err != nil {
 		if os.IsNotExist(err) {
-			conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
-		} else {
-			panic("Something broke when checking file status")
+			handleResponse(conn, http.StatusNotFound, nil, nil)
+			return
 		}
+		panic("Something broke when checking file status")
 	}
 	if info.Mode().IsRegular() {
-		bytes := make([]byte, info.Size())
+		fileBytes := make([]byte, info.Size())
 		file, err := os.Open(fp)
 		if err != nil {
 			panic("File exists but cant open it")
 		}
-		_, err = bufio.NewReader(file).Read(bytes)
-		// Header
-		conn.Write(fmt.Appendf(nil,
-			"HTTP/1.1 200 OK\r\n"+
-				"Content-Type: application/octet-stream\r\n"+
-				"Content-Length: %d\r\n\r\n",
-			info.Size(),
-		))
-		// Body
-		conn.Write(bytes)
+		_, err = bufio.NewReader(file).Read(fileBytes)
+		handleResponse(conn, http.StatusOK, map[string]string{
+			"Content-Type": "application/octet-stream",
+		}, fileBytes)
 	}
 }
 
-func handlePOSTFile(conn net.Conn, base string, cfg *config, body []byte) {
-	fp := path.Join(cfg.directory, base)
-	err := os.WriteFile(fp, body, 0777)
+func handlePOSTFile(conn *Connection, cfg *config) {
+	fp := path.Join(cfg.directory, conn.base)
+	err := os.WriteFile(fp, conn.body, 0777)
 	if err != nil {
 		panic("Failed to write a file")
 	}
-	conn.Write(fmt.Appendf(nil, "HTTP/1.1 201 Created\r\n\r\n"))
+	handleResponse(conn, http.StatusCreated, nil, nil)
+}
+
+func handleResponse(conn *Connection, status int, headers map[string]string, body []byte) {
+	if headers == nil {
+		headers = map[string]string{}
+	}
+
+	if len(body) > 0 && strings.Contains(conn.req.Header.Get("Accept-Encoding"), "gzip") {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write(body); err != nil {
+			panic("Failed to gzip response body")
+		}
+		if err := gz.Close(); err != nil {
+			panic("Failed to finalize gzip response body")
+		}
+		body = buf.Bytes()
+		headers["Content-Encoding"] = "gzip"
+	}
+
+	if len(body) > 0 {
+		headers["Content-Length"] = strconv.Itoa(len(body))
+	}
+
+	sb := strings.Builder{}
+	sb.WriteString(fmt.Sprintf("HTTP/1.1 %d %s\r\n", status, http.StatusText(status)))
+	for header, value := range headers {
+		sb.WriteString(header)
+		sb.WriteString(": ")
+		sb.WriteString(value)
+		sb.WriteString("\r\n")
+	}
+	sb.WriteString("\r\n")
+	sb.Write(body)
+	conn.socket.Write([]byte(sb.String()))
 }
