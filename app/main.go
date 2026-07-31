@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 var _ = net.Listen
@@ -48,60 +48,62 @@ func main() {
 	}
 	defer l.Close()
 	wg := sync.WaitGroup{}
-	timeout := time.NewTimer(10 * time.Second)
 	for true {
-		select {
-		case <-timeout.C:
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting conn: ", err.Error())
 			os.Exit(1)
-		default:
-			conn, err := l.Accept()
-			if err != nil {
-				fmt.Println("Error accepting conn: ", err.Error())
-				os.Exit(1)
-			}
-			wg.Add(1)
-			go handleRequest(conn, &wg, &cfg)
-			timeout.Reset(10 * time.Second)
 		}
+		wg.Add(1)
+		go handleRequest(conn, &wg, &cfg)
 	}
 }
 
 func handleRequest(socket net.Conn, wg *sync.WaitGroup, cfg *config) {
 	defer socket.Close()
 	defer wg.Done()
+	keepAlive := true
+	for keepAlive {
+		reader := bufio.NewReader(socket)
+		req, err := http.ReadRequest(reader)
 
-	reader := bufio.NewReader(socket)
-	req, err := http.ReadRequest(reader)
-
-	if err != nil {
-		fmt.Println("Error reading request: ", err.Error())
-		os.Exit(1)
-	}
-	base := "/" + path.Base(req.URL.Path)
-	body, _ := io.ReadAll(req.Body)
-	conn := Connection{socket, req, base, body}
-
-	switch req.URL.Path {
-	case "/":
-		handleResponse(&conn, http.StatusOK, nil, nil)
-	case "/echo" + base:
-		handleResponse(&conn, http.StatusOK, map[string]string{
-			"Content-Type": "text/plain",
-		}, []byte(base[1:]))
-	case "/user-agent":
-		userAgent := req.Header.Get(strings.ToLower("User-Agent"))
-		handleResponse(&conn, http.StatusOK, map[string]string{
-			"Content-Type": "text/plain",
-		}, []byte(userAgent))
-	case "/files" + base:
-		switch req.Method {
-		case "POST":
-			handlePOSTFile(&conn, cfg)
-		case "GET":
-			handleGetFile(&conn, cfg)
+		if err != nil {
+			if err != io.EOF && !errors.Is(err, io.ErrUnexpectedEOF) {
+				fmt.Println("Error reading request:", err)
+			}
+			break
 		}
-	default:
-		handleResponse(&conn, http.StatusNotFound, nil, nil)
+
+		if req.Header.Get("Connection") == "close" {
+			keepAlive = false
+		}
+
+		base := "/" + path.Base(req.URL.Path)
+		body, _ := io.ReadAll(req.Body)
+		conn := Connection{socket, req, base, body}
+
+		switch req.URL.Path {
+		case "/":
+			handleResponse(&conn, http.StatusOK, nil, nil)
+		case "/echo" + base:
+			handleResponse(&conn, http.StatusOK, map[string]string{
+				"Content-Type": "text/plain",
+			}, []byte(base[1:]))
+		case "/user-agent":
+			userAgent := req.Header.Get(strings.ToLower("User-Agent"))
+			handleResponse(&conn, http.StatusOK, map[string]string{
+				"Content-Type": "text/plain",
+			}, []byte(userAgent))
+		case "/files" + base:
+			switch req.Method {
+			case "POST":
+				handlePOSTFile(&conn, cfg)
+			case "GET":
+				handleGetFile(&conn, cfg)
+			}
+		default:
+			handleResponse(&conn, http.StatusNotFound, nil, nil)
+		}
 	}
 }
 
