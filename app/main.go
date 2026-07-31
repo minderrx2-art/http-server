@@ -144,6 +144,10 @@ func handleResponse(conn *Connection, status int, headers map[string]string, bod
 		headers = map[string]string{}
 	}
 
+	if conn.req.Header.Get("Connection") == "close" {
+		headers["Connection"] = "close"
+	}
+
 	if len(body) > 0 && strings.Contains(conn.req.Header.Get("Accept-Encoding"), "gzip") {
 		var buf bytes.Buffer
 		gz := gzip.NewWriter(&buf)
